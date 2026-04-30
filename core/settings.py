@@ -96,6 +96,12 @@ USE_TZ = True
 
 # Static files
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# CSRF trusted origins (update with your PythonAnywhere username)
+CSRF_TRUSTED_ORIGINS = [
+    'https://<your-username>.pythonanywhere.com',
+]
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
