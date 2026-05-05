@@ -1,8 +1,8 @@
 """
-Models for the grocery expense tracker.
+Models for tracking day-to-day spending.
 
-GroceryItem — master catalog of items a user tracks.
-Purchase    — every individual purchase event with date, time, quantity, price.
+GroceryItem remains the underlying table name for backward compatibility,
+but the model now represents any user-defined expense item.
 """
 
 from django.db import models
@@ -12,24 +12,9 @@ from django.utils import timezone
 
 class GroceryItem(models.Model):
     """
-    A grocery item that the user buys regularly.
-    e.g., Milk, Rice, Tomato, Bread, Eggs, etc.
+    A reusable expense item template.
+    Examples: Milk, Bus Ticket, Coffee, Mobile Recharge, Rent.
     """
-
-    UNIT_CHOICES = [
-        ('litre', 'Litre'),
-        ('ml', 'Millilitre'),
-        ('kg', 'Kilogram'),
-        ('gram', 'Gram'),
-        ('packet', 'Packet'),
-        ('piece', 'Piece'),
-        ('dozen', 'Dozen'),
-        ('bundle', 'Bundle'),
-        ('box', 'Box'),
-        ('bottle', 'Bottle'),
-        ('can', 'Can'),
-        ('other', 'Other'),
-    ]
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -37,7 +22,11 @@ class GroceryItem(models.Model):
         related_name='grocery_items',
     )
     name = models.CharField(max_length=100)
-    unit_type = models.CharField(max_length=30, choices=UNIT_CHOICES, default='piece')
+    unit_type = models.CharField(
+        max_length=30,
+        default='unit',
+        help_text="Flexible unit label, e.g., kg, litre, trip, month, meal, ticket.",
+    )
     default_price_per_unit = models.DecimalField(
         max_digits=10,
         decimal_places=2,
@@ -47,25 +36,25 @@ class GroceryItem(models.Model):
         max_length=50,
         blank=True,
         default='',
-        help_text="Optional category, e.g., Dairy, Vegetables, Grains, Snacks.",
+        help_text="Optional spending category, e.g., Groceries, Transport, Bills, Health.",
     )
+    description = models.CharField(max_length=255, blank=True, default='')
+    is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ['name']
-        # Prevent duplicate item names per user
         unique_together = ['user', 'name']
 
     def __str__(self):
-        return f"{self.name} ({self.unit_type}) — ₹{self.default_price_per_unit}"
+        return f"{self.name} ({self.unit_type}) - {self.default_price_per_unit}"
 
 
 class Purchase(models.Model):
     """
-    A single purchase event.
-    Tracks exactly what was bought, how many units, at what price,
-    and the exact date & time of purchase.
+    A single expense or purchase event.
+    Snapshot fields preserve history even if the reusable item later changes.
     """
 
     user = models.ForeignKey(
@@ -75,13 +64,18 @@ class Purchase(models.Model):
     )
     item = models.ForeignKey(
         GroceryItem,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
         related_name='purchases',
+        null=True,
+        blank=True,
     )
+    item_name_snapshot = models.CharField(max_length=100, blank=True, default='')
+    unit_type_snapshot = models.CharField(max_length=30, blank=True, default='')
+    category_snapshot = models.CharField(max_length=50, blank=True, default='')
     quantity = models.DecimalField(
         max_digits=10,
         decimal_places=2,
-        help_text="Number of units bought (e.g., 2 litres, 0.5 kg).",
+        help_text="Number of units bought, e.g., 2 litres, 1 trip, 1 month.",
     )
     price_per_unit = models.DecimalField(
         max_digits=10,
@@ -101,8 +95,12 @@ class Purchase(models.Model):
     notes = models.TextField(
         blank=True,
         default='',
-        help_text="Optional notes, e.g., 'bought from local market'.",
+        help_text="Optional notes about the expense.",
     )
+    merchant_name = models.CharField(max_length=120, blank=True, default='')
+    payment_method = models.CharField(max_length=30, blank=True, default='')
+    currency_code = models.CharField(max_length=3, default='INR')
+    location = models.CharField(max_length=120, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -110,12 +108,18 @@ class Purchase(models.Model):
         ordering = ['-purchased_at']
 
     def save(self, *args, **kwargs):
-        """Auto-calculate total_price before saving."""
+        """Auto-calculate total_price and keep an item snapshot."""
+        if self.item:
+            self.item_name_snapshot = self.item.name
+            self.unit_type_snapshot = self.item.unit_type
+            self.category_snapshot = self.item.category
         self.total_price = self.quantity * self.price_per_unit
         super().save(*args, **kwargs)
 
     def __str__(self):
+        item_name = self.item_name_snapshot or (self.item.name if self.item else 'Expense')
+        unit_type = self.unit_type_snapshot or (self.item.unit_type if self.item else 'unit')
         return (
-            f"{self.item.name} × {self.quantity} {self.item.unit_type} "
-            f"= ₹{self.total_price} on {self.purchased_at:%Y-%m-%d %H:%M}"
+            f"{item_name} x {self.quantity} {unit_type} "
+            f"= {self.currency_code} {self.total_price} on {self.purchased_at:%Y-%m-%d %H:%M}"
         )

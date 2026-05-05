@@ -129,8 +129,8 @@ REST_FRAMEWORK = {
 
 # ─── drf-spectacular (Swagger / OpenAPI) ────────────────────────────
 SPECTACULAR_SETTINGS = {
-    'TITLE': 'Daily Grocery Expense Tracker API',
-    'DESCRIPTION': 'Track your daily grocery purchases, monitor spending patterns, and get monthly expense summaries.',
+    'TITLE': 'Daily Expense Tracker API',
+    'DESCRIPTION': 'Track daily spending across groceries, transport, bills, lifestyle, and other personal expenses.',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
 }

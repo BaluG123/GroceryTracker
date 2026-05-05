@@ -8,7 +8,9 @@ from . import views
 
 router = DefaultRouter()
 router.register(r'items', views.GroceryItemViewSet, basename='groceryitem')
+router.register(r'expense-items', views.GroceryItemViewSet, basename='expenseitem')
 router.register(r'purchases', views.PurchaseViewSet, basename='purchase')
+router.register(r'expenses', views.PurchaseViewSet, basename='expense')
 
 urlpatterns = [
     path('', include(router.urls)),

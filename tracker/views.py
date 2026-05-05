@@ -1,14 +1,15 @@
 """
-Views for grocery items, purchases, and spending reports.
+Views for expense items, expense records, and spending reports.
 """
 
 from datetime import datetime
 from decimal import Decimal
 
-from django.db.models import Sum, Count, F, Q
+from django.db.models import Sum, Count
 from django.db.models.functions import TruncDate
 from django.utils import timezone
 from rest_framework import viewsets, status
+from rest_framework.decorators import action
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -26,7 +27,7 @@ from .filters import PurchaseFilter
 
 class GroceryItemViewSet(viewsets.ModelViewSet):
     """
-    CRUD operations for grocery items.
+    CRUD operations for reusable expense items.
 
     list:    GET    /api/items/         — List all your grocery items
     create:  POST   /api/items/         — Add a new item
@@ -39,14 +40,31 @@ class GroceryItemViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     search_fields = ['name', 'category']
     ordering_fields = ['name', 'default_price_per_unit', 'created_at']
+    pagination_class = None
 
     def get_queryset(self):
-        """Only return items belonging to the authenticated user."""
-        return GroceryItem.objects.filter(user=self.request.user).prefetch_related('purchases')
+        """Return the authenticated user's active items unless requested otherwise."""
+        queryset = GroceryItem.objects.filter(user=self.request.user).prefetch_related('purchases')
+        include_inactive = self.request.query_params.get('include_inactive')
+        if include_inactive != 'true':
+            queryset = queryset.filter(is_active=True)
+        return queryset
 
     def perform_create(self, serializer):
         """Automatically set the user to the authenticated user."""
         serializer.save(user=self.request.user)
+
+    def perform_destroy(self, instance):
+        """Soft delete items so historical spending never disappears."""
+        instance.is_active = False
+        instance.save(update_fields=['is_active', 'updated_at'])
+
+    @action(detail=True, methods=['post'])
+    def restore(self, request, pk=None):
+        item = self.get_object()
+        item.is_active = True
+        item.save(update_fields=['is_active', 'updated_at'])
+        return Response(self.get_serializer(item).data, status=status.HTTP_200_OK)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -74,7 +92,7 @@ class PurchaseViewSet(viewsets.ModelViewSet):
     """
     permission_classes = [IsAuthenticated]
     filterset_class = PurchaseFilter
-    search_fields = ['item__name', 'notes']
+    search_fields = ['item_name_snapshot', 'notes', 'merchant_name', 'category_snapshot', 'location']
     ordering_fields = ['purchased_at', 'total_price', 'quantity']
 
     def get_queryset(self):
@@ -137,7 +155,7 @@ def monthly_summary(request):
     # Item-wise breakdown
     item_breakdown = (
         purchases
-        .values('item__name', 'item__unit_type')
+        .values('item_name_snapshot', 'unit_type_snapshot')
         .annotate(
             times_bought=Count('id'),
             total_quantity=Sum('quantity'),
@@ -165,8 +183,8 @@ def monthly_summary(request):
         'total_purchases': totals['total_purchases'],
         'item_breakdown': [
             {
-                'item_name': item['item__name'],
-                'unit_type': item['item__unit_type'],
+                'item_name': item['item_name_snapshot'],
+                'unit_type': item['unit_type_snapshot'],
                 'times_bought': item['times_bought'],
                 'total_quantity': str(item['total_quantity']),
                 'total_spent': str(item['total_spent']),
@@ -219,12 +237,11 @@ def item_frequency(request):
 
     frequency = (
         purchases
-        .values('item__id', 'item__name', 'item__unit_type', 'item__category')
+        .values('item', 'item_name_snapshot', 'unit_type_snapshot', 'category_snapshot')
         .annotate(
             times_bought=Count('id'),
             total_quantity=Sum('quantity'),
             total_spent=Sum('total_price'),
-            avg_price_per_unit=Sum('total_price') / Sum('quantity'),
         )
         .order_by('-times_bought')
     )
@@ -233,14 +250,16 @@ def item_frequency(request):
         'filters': {'month': month, 'year': year},
         'items': [
             {
-                'item_id': f['item__id'],
-                'item_name': f['item__name'],
-                'unit_type': f['item__unit_type'],
-                'category': f['item__category'],
+                'item_id': f['item'],
+                'item_name': f['item_name_snapshot'],
+                'unit_type': f['unit_type_snapshot'],
+                'category': f['category_snapshot'],
                 'times_bought': f['times_bought'],
                 'total_quantity': str(f['total_quantity']),
                 'total_spent': str(f['total_spent']),
-                'avg_price_per_unit': str(round(f['avg_price_per_unit'], 2)),
+                'avg_price_per_unit': str(
+                    round((f['total_spent'] or Decimal('0.00')) / (f['total_quantity'] or Decimal('1.00')), 2)
+                ),
             }
             for f in frequency
         ],
@@ -288,14 +307,18 @@ def daily_breakdown(request):
         purchase_list = [
             {
                 'id': p.id,
-                'item_name': p.item.name,
-                'unit_type': p.item.unit_type,
+                'item_name': p.item_name_snapshot or (p.item.name if p.item else ''),
+                'unit_type': p.unit_type_snapshot or (p.item.unit_type if p.item else ''),
                 'quantity': str(p.quantity),
                 'price_per_unit': str(p.price_per_unit),
                 'total_price': str(p.total_price),
                 'time': p.purchased_at.strftime('%H:%M:%S'),
                 'purchased_at': p.purchased_at.isoformat(),
                 'notes': p.notes,
+                'merchant_name': p.merchant_name,
+                'payment_method': p.payment_method,
+                'currency_code': p.currency_code,
+                'location': p.location,
             }
             for p in purchases
         ]
@@ -333,12 +356,15 @@ def daily_breakdown(request):
             daily_data[date_key]['total_spent'] += p.total_price
             daily_data[date_key]['purchases'].append({
                 'id': p.id,
-                'item_name': p.item.name,
+                'item_name': p.item_name_snapshot or (p.item.name if p.item else ''),
                 'quantity': str(p.quantity),
                 'price_per_unit': str(p.price_per_unit),
                 'total_price': str(p.total_price),
                 'time': p.purchased_at.strftime('%H:%M:%S'),
                 'notes': p.notes,
+                'merchant_name': p.merchant_name,
+                'payment_method': p.payment_method,
+                'currency_code': p.currency_code,
             })
 
         # Convert to list and stringify decimals

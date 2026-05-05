@@ -1,6 +1,4 @@
-"""
-Filters for purchase queries — filter by date range, item, etc.
-"""
+"""Filters for expense record queries."""
 
 import django_filters
 from .models import Purchase
@@ -26,7 +24,7 @@ class PurchaseFilter(django_filters.FilterSet):
         label='To date (YYYY-MM-DD)',
     )
     item_name = django_filters.CharFilter(
-        field_name='item__name',
+        field_name='item_name_snapshot',
         lookup_expr='icontains',
         label='Item name contains',
     )
